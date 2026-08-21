@@ -204,7 +204,7 @@ def text_width(draw, text, render_font, stroke_width=0):
 
 def is_symbol_character(char):
     category = unicodedata.category(char)
-    return char in GAME_CJK_SYMBOLS or category in {"Sc", "Sk", "Sm", "So"}
+    return char in GAME_CJK_SYMBOLS or category in {"Sk", "Sm", "So"}
 
 
 def _draw_basic_text(image, xy, text, render_font, fill, stroke_width=0, stroke_fill=None):
@@ -322,8 +322,6 @@ def clean_display_text(value):
     text = str(value or "")
     return (
         text.replace("ㅤ", " ")
-            .replace("¥", "")
-            .replace("￥", "")
             .replace("□", "")
             .replace("▢", "")
             .replace("▯", "")
