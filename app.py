@@ -10,7 +10,8 @@ app = Flask(__name__)
 session = requests.Session()
 
 API_KEY = os.environ.get("API_KEY", "suyash").strip() or "suyash"
-INFO_API_URL = os.environ.get("INFO_API_URL", "").strip() or "https://info.bhuwanhex.bond/info"
+INFO_API_URL = os.environ.get("INFO_API_URL", "").strip() or "https://suyashprofileapi.vercel.app/profile"
+INFO_SERVER = os.environ.get("INFO_SERVER", "IND").strip() or "IND"
 ICON_API_URL = "https://iconapi.wasmer.app/{item_id}"
 GITHUB_ASSETS_RAW = "https://raw.githubusercontent.com/pankaj07-ux/ff-assets/main"
 TEMPLATE_FILENAME = "profile_template.png"
@@ -65,6 +66,11 @@ CJK_FONT_CANDIDATES = [
     "fonts/cjk.ttf",
     "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
     "/usr/share/fonts/opentype/noto/NotoSansCJKJP-Regular.otf",
+]
+
+CHEROKEE_FONT_CANDIDATES = [
+    "C:/Windows/Fonts/gadugib.ttf",
+    "C:/Windows/Fonts/gadugi.ttf",
 ]
 
 GAME_CJK_SYMBOLS = set("亗乂ツ彡々〆么乄メ卍卐の丶丂乙爪气刁卄ฬ๛۝")
@@ -175,18 +181,25 @@ def text_bbox(draw, text, render_font, stroke_width=0):
 
 def text_width(draw, text, render_font, stroke_width=0):
     text = str(text or "")
-    if "" not in text and not any(is_symbol_character(char) for char in text):
+    if "" not in text and not any(is_fallback_character(char) for char in text):
         bbox = text_bbox(draw, text, render_font, stroke_width=stroke_width)
         return bbox[2] - bbox[0]
 
     total = 0
     symbol_font = None
     cjk_font = None
+    cherokee_font = None
     for char in text:
         if char == "":
             total += max(14, int(render_font.requested_size * 0.56))
-        elif is_symbol_character(char):
-            if char in GAME_CJK_SYMBOLS:
+        elif is_fallback_character(char):
+            if is_modifier_letter(char):
+                special_font = render_font
+            elif is_cherokee_character(char):
+                if cherokee_font is None:
+                    cherokee_font = load_font(CHEROKEE_FONT_CANDIDATES, render_font.requested_size)
+                special_font = cherokee_font
+            elif is_cjk_character(char):
                 if cjk_font is None:
                     cjk_font = load_font(CJK_FONT_CANDIDATES, render_font.requested_size)
                 special_font = cjk_font
@@ -205,6 +218,35 @@ def text_width(draw, text, render_font, stroke_width=0):
 def is_symbol_character(char):
     category = unicodedata.category(char)
     return char in GAME_CJK_SYMBOLS or category in {"Sk", "Sm", "So"}
+
+
+def is_cjk_character(char):
+    codepoint = ord(char)
+    return (
+        char in GAME_CJK_SYMBOLS
+        or 0x2E80 <= codepoint <= 0x9FFF
+        or 0xAC00 <= codepoint <= 0xD7AF
+        or 0xF900 <= codepoint <= 0xFAFF
+        or 0xFF00 <= codepoint <= 0xFFEF
+    )
+
+
+def is_cherokee_character(char):
+    codepoint = ord(char)
+    return 0x13A0 <= codepoint <= 0x13FF or 0xAB70 <= codepoint <= 0xABBF
+
+
+def is_modifier_letter(char):
+    codepoint = ord(char)
+    return (
+        0x0250 <= codepoint <= 0x02FF
+        or 0x1D00 <= codepoint <= 0x1D7F
+        or 0x2070 <= codepoint <= 0x209F
+    )
+
+
+def is_fallback_character(char):
+    return char == "" or ord(char) > 127 or is_symbol_character(char)
 
 
 def _draw_basic_text(image, xy, text, render_font, fill, stroke_width=0, stroke_fill=None):
@@ -257,7 +299,7 @@ def _draw_apple_logo(image, xy, render_font, fill):
 
 def draw_text(image, xy, text, render_font, fill, stroke_width=0, stroke_fill=None):
     text = str(text or "")
-    if "" not in text and not any(is_symbol_character(char) for char in text):
+    if "" not in text and not any(is_fallback_character(char) for char in text):
         _draw_basic_text(image, xy, text, render_font, fill, stroke_width=stroke_width, stroke_fill=stroke_fill)
         return
 
@@ -265,11 +307,18 @@ def draw_text(image, xy, text, render_font, fill, stroke_width=0, stroke_fill=No
     draw = ImageDraw.Draw(image)
     symbol_font = None
     cjk_font = None
+    cherokee_font = None
     for char in text:
         if char == "":
             x += _draw_apple_logo(image, (x, y), render_font, fill)
-        elif is_symbol_character(char):
-            if char in GAME_CJK_SYMBOLS:
+        elif is_fallback_character(char):
+            if is_modifier_letter(char):
+                special_font = render_font
+            elif is_cherokee_character(char):
+                if cherokee_font is None:
+                    cherokee_font = load_font(CHEROKEE_FONT_CANDIDATES, render_font.requested_size)
+                special_font = cherokee_font
+            elif is_cjk_character(char):
                 if cjk_font is None:
                     cjk_font = load_font(CJK_FONT_CANDIDATES, render_font.requested_size)
                 special_font = cjk_font
@@ -366,6 +415,7 @@ def map_language(value):
         "tr": "Türkçe",
         "ms": "Malay",
         "language_en": "English",
+        "languageen": "English",
         "language_id": "Indonesia",
         "language_es": "Español",
         "language_ar": "العربية",
@@ -418,12 +468,16 @@ def split_nickname(nickname):
     return "", nickname
 
 
-def fetch_player_info(uid):
+def fetch_player_info(uid, server=None):
     if not INFO_API_URL:
         print("INFO_API_URL is not configured")
         return None
     try:
-        response = session.get(INFO_API_URL, params={"uid": uid}, timeout=HTTP_TIMEOUT)
+        response = session.get(
+            INFO_API_URL,
+            params={"server": server or INFO_SERVER, "uid": uid},
+            timeout=HTTP_TIMEOUT,
+        )
         response.raise_for_status()
         return response.json()
     except Exception as exc:
@@ -483,12 +537,12 @@ def fetch_banner_asset(banner_id=None):
 def extract_profile_fields(data):
     if not isinstance(data, dict):
         return None
-    account = data.get("AccountProfile", {}) or {}
+    account = data.get("AccountProfile", {}) or data.get("accountprofile", {}) or {}
     if not isinstance(account, dict):
         account = {}
-    basic = account.get("basicInfo", {}) or {}
-    profile = account.get("profileInfo", {}) or {}
-    social = account.get("socialInfo", {}) or {}
+    basic = account.get("basicInfo", {}) or account.get("basicinfo", {}) or data.get("basicinfo", {}) or {}
+    profile = account.get("profileInfo", {}) or account.get("profileinfo", {}) or data.get("profileinfo", {}) or {}
+    social = account.get("socialInfo", {}) or account.get("socialinfo", {}) or data.get("socialinfo", {}) or {}
     # The current info provider returns these sections at the top level.
     basic = data.get("playerData", {}) or basic
     profile = data.get("profileInfo", {}) or profile
@@ -503,6 +557,7 @@ def extract_profile_fields(data):
     if not guild_data:
         guild_data = data.get("guildInfo", {}) or {}
     clan_basic = ((data.get("ClanSummary") or {}).get("clanBasicInfo") or {}) if isinstance(data.get("ClanSummary"), dict) else {}
+    clan_basic = clan_basic or data.get("clanbasicinfo", {}) or {}
 
     # Support both the original nested response and APIs that return fields at the top level.
     nickname = clean_display_text(first_non_empty(
@@ -518,16 +573,22 @@ def extract_profile_fields(data):
         main_name = nickname
 
     return {
-        "uid": first_non_empty(basic.get("accountId"), data.get("uid"), data.get("accountId"), "UNKNOWN"),
+        "uid": first_non_empty(basic.get("accountId"), basic.get("accountid"), data.get("uid"), data.get("accountId"), "UNKNOWN"),
         "nickname": nickname,
         "nickname_prefix": prefix,
         "nickname_main": main_name,
         "language": map_language(first_non_empty(social.get("language"), "English")),
         "level": first_non_empty(basic.get("level"), 0),
         "likes": first_non_empty(basic.get("liked"), 0),
-        "head_pic": basic.get("headPic"),
-        "avatar_id": profile.get("avatarId"),
-        "clan_name": clean_display_text(first_non_empty(guild_data.get("clanName"), clan_basic.get("clanName"), "")),
+        "head_pic": first_non_empty(basic.get("headPic"), basic.get("headpic")),
+        "avatar_id": first_non_empty(profile.get("avatarId"), profile.get("avatarid")),
+        "clan_name": clean_display_text(first_non_empty(
+            guild_data.get("clanName"),
+            guild_data.get("clanname"),
+            clan_basic.get("clanName"),
+            clan_basic.get("clanname"),
+            "",
+        )),
     }
 
 
@@ -659,8 +720,8 @@ def home():
     return jsonify({
         "status": "online",
         "api": "Free Fire Profile Image API",
-        "endpoint": "/profile-image?uid=PLAYER_UID&key=suyash",
-        "example": "/profile-image?uid=6950878222&key=suyash",
+        "endpoint": "/profile-image?server=SERVER&uid=PLAYER_UID&key=suyash",
+        "example": "/profile-image?server=IND&uid=6950878222&key=suyash",
         "credits": {
             "developer": "Pankaj Sah",
             "handle": "pankaj-ux",
@@ -678,6 +739,7 @@ def health():
 @app.route("/profile-image", methods=["GET"])
 def profile_image():
     uid = request.args.get("uid")
+    server = request.args.get("server", INFO_SERVER).strip() or INFO_SERVER
     key = request.args.get("key")
     debug = request.args.get("debug") == "1"
 
@@ -686,7 +748,7 @@ def profile_image():
     if not uid:
         return jsonify({"error": "Missing uid parameter"}), 400
 
-    player_data = fetch_player_info(uid)
+    player_data = fetch_player_info(uid, server=server)
     if player_data is None:
         return jsonify({"error": "Failed to fetch player info"}), 500
 
